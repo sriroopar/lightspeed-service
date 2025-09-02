@@ -77,6 +77,9 @@ def update_ols_configmap() -> None:
             "cp_offline_token": os.getenv("CP_OFFLINE_TOKEN", ""),
         }
 
+        # Note: MCP is enabled via introspectionEnabled=true in CRD, not configmap
+        # The operator automatically provisions MCP sidecar when introspection is enabled
+
         # Update the configmap
         configmap["data"][DEFAULT_CONFIGURATION_FILE] = yaml.dump(olsconfig)
         updated_configmap = yaml.dump(configmap)
@@ -110,15 +113,73 @@ def setup_service_accounts(namespace: str) -> None:
     cluster_utils.grant_sa_user_access(
         "metrics-test-user", "lightspeed-operator-ols-metrics-reader"
     )
+    
+    # Set up additional permissions for user data collection
+    print("Setting up user data collection authentication...")
+    try:
+        # Grant service accounts access to pull secrets (needed for data collection auth)
+        cluster_utils.run_oc(
+            [
+                "create",
+                "clusterrole",
+                "pull-secret-reader",
+                "--verb=get",
+                "--resource=secrets",
+                "--resource-name=pull-secret",
+            ],
+            ignore_existing_resource=True,
+        )
+        
+        # Also allow reading cluster info (needed for cluster ID)
+        cluster_utils.run_oc(
+            [
+                "create",
+                "clusterrole",
+                "cluster-info-reader", 
+                "--verb=get",
+                "--resource=namespaces",
+                "--resource-name=kube-system",
+            ],
+            ignore_existing_resource=True,
+        )
+        
+        # Bind roles to lightspeed service account (used by data collector sidecar)
+        cluster_utils.run_oc(
+            [
+                "create",
+                "clusterrolebinding",
+                "lightspeed-pull-secret-access",
+                "--clusterrole=pull-secret-reader",
+                f"--serviceaccount={namespace}:lightspeed-app-server",
+            ],
+            ignore_existing_resource=True,
+        )
+        
+        cluster_utils.run_oc(
+            [
+                "create",
+                "clusterrolebinding",
+                "lightspeed-cluster-info-access",
+                "--clusterrole=cluster-info-reader",
+                f"--serviceaccount={namespace}:lightspeed-app-server",
+            ],
+            ignore_existing_resource=True,
+        )
+        
+        print("User data collection authentication configured.")
+    except Exception as e:
+        print(f"Warning: Could not fully configure user data collection auth: {e}")
 
 
 def setup_rbac(namespace: str) -> None:
-    """Set up pod-reader role and binding.
+    """Set up RBAC roles and bindings for E2E testing.
 
     Args:
         namespace: The Kubernetes namespace for RBAC configuration.
     """
-    print("Ensuring 'pod-reader' role and rolebinding exist...")
+    print("Setting up RBAC permissions for E2E testing...")
+    
+    # Basic pod-reader role for standard tests
     cluster_utils.run_oc(
         [
             "create",
@@ -144,7 +205,83 @@ def setup_rbac(namespace: str) -> None:
         ],
         ignore_existing_resource=True,
     )
-    print("RBAC setup verified.")
+    
+    # Additional permissions for user data collection and MCP sidecar
+    print("Setting up additional permissions for sidecar containers...")
+    
+    # Cluster-wide permissions needed for MCP sidecar and data collection
+    cluster_utils.run_oc(
+        [
+            "create",
+            "clusterrole",
+            "ols-sidecar-permissions",
+            "--verb=get,list,watch",
+            "--resource=nodes,namespaces,pods,services,secrets,configmaps",
+        ],
+        ignore_existing_resource=True,
+    )
+    
+    # Bind to the lightspeed service account (used by sidecars)
+    cluster_utils.run_oc(
+        [
+            "create",
+            "clusterrolebinding",
+            "ols-sidecar-binding",
+            "--clusterrole=ols-sidecar-permissions",
+            f"--serviceaccount={namespace}:lightspeed-app-server",
+        ],
+        ignore_existing_resource=True,
+    )
+    
+    # Also bind to test-user for testing scenarios
+    cluster_utils.run_oc(
+        [
+            "create",
+            "clusterrolebinding",
+            "test-user-sidecar-binding",
+            "--clusterrole=ols-sidecar-permissions",
+            f"--serviceaccount={namespace}:test-user",
+        ],
+        ignore_existing_resource=True,
+    )
+    
+    print("RBAC setup completed with sidecar permissions.")
+
+
+def check_pod_startup_issues() -> None:
+    """Check for common issues that prevent pods from starting."""
+    print("Checking for common pod startup issues...")
+    
+    try:
+        # Check if there are any pods in pending state
+        pending_pods = cluster_utils.run_oc([
+            "get", "pods", "-o", "jsonpath={.items[?(@.status.phase=='Pending')].metadata.name}"
+        ]).stdout.strip()
+        
+        if pending_pods:
+            print(f"⚠️  Found pending pods: {pending_pods}")
+            
+            # Check events for these pods
+            for pod_name in pending_pods.split():
+                if pod_name:
+                    print(f"Checking events for pod: {pod_name}")
+                    pod_events = cluster_utils.run_oc([
+                        "get", "events", "--field-selector", f"involvedObject.name={pod_name}"
+                    ]).stdout
+                    print(f"Events for {pod_name}:")
+                    print(pod_events)
+        
+        # Check for image pull issues
+        image_pull_errors = cluster_utils.run_oc([
+            "get", "events", "--field-selector", "reason=Failed", "-o", "jsonpath={.items[?(@.reason=='Failed')].message}"
+        ]).stdout
+        
+        if "image" in image_pull_errors.lower() or "pull" in image_pull_errors.lower():
+            print("⚠️  Potential image pull issues detected")
+            print(image_pull_errors)
+            
+    except Exception as e:
+        print(f"Could not check for startup issues: {e}")
 
 
 def wait_for_deployment() -> None:
@@ -170,8 +307,62 @@ def wait_for_deployment() -> None:
         "Waiting for lightspeed-app-server deployment to be detected",
     )
 
+    # Enhanced pod readiness check with MCP sidecar support
+    print("Waiting for deployment to be ready...")
+    
+    # Check if this is a tool calling configuration (which needs MCP sidecar)
+    ols_config_suffix = os.getenv("OLS_CONFIG_SUFFIX", "default")
+    is_tool_calling = "tool_calling" in ols_config_suffix
+    
+    if is_tool_calling:
+        print("Tool calling detected - expecting 3 containers (main + data-collector + mcp-sidecar)")
+    else:
+        print("Standard configuration - expecting 2 containers (main + data-collector)")
+
     print("Waiting for pods to be ready after configuration update...")
-    cluster_utils.wait_for_running_pod()
+    try:
+        cluster_utils.wait_for_running_pod()
+        
+        # For tool calling, give MCP sidecar extra time to initialize
+        if is_tool_calling:
+            print("Giving MCP sidecar additional time to initialize...")
+            import time
+            time.sleep(15)  # Extra wait for MCP sidecar to be fully ready
+            
+        print("✅ Pod containers are ready")
+        
+    except Exception as e:
+        print(f"❌ Error waiting for pod readiness: {e}")
+        
+        # Check for common startup issues
+        check_pod_startup_issues()
+        
+        # Get debug information
+        try:
+            pods = cluster_utils.run_oc(["get", "pods", "-o", "wide"]).stdout
+            print("Current pods status:")
+            print(pods)
+            
+            # Get container statuses if pod exists
+            try:
+                pod_name = cluster_utils.get_pod_by_prefix()[0]
+                container_statuses = cluster_utils.run_oc([
+                    "get", "pod", pod_name, "-o", 
+                    "jsonpath={.status.containerStatuses[*].name}"
+                ]).stdout
+                print(f"Container names: {container_statuses}")
+                
+                ready_statuses = cluster_utils.run_oc([
+                    "get", "pod", pod_name, "-o",
+                    "jsonpath={.status.containerStatuses[*].ready}"
+                ]).stdout
+                print(f"Container ready statuses: {ready_statuses}")
+            except Exception:
+                print("No app server pod found yet")
+            
+        except Exception as debug_e:
+            print(f"Could not get debug info: {debug_e}")
+        raise
 
 
 def setup_route() -> str:
@@ -198,6 +389,9 @@ def setup_route() -> str:
     return f"https://{url}"
 
 
+# MCP validation removed - operator handles MCP sidecar automatically via introspectionEnabled
+
+
 def adapt_ols_config() -> tuple[str, str, str]:
     """Adapt OLS configuration for different providers dynamically.
 
@@ -220,6 +414,7 @@ def adapt_ols_config() -> tuple[str, str, str]:
         raise RuntimeError(f"Error applying OLSConfig CR: {e}") from e
 
     # Scale controller manager back up to reconcile changes to the olsconfig
+    print("Scaling controller manager up to apply new configuration...")
     cluster_utils.run_oc(
         [
             "scale",
@@ -228,6 +423,8 @@ def adapt_ols_config() -> tuple[str, str, str]:
             "1",
         ]
     )
+    
+    # Wait for controller manager to be ready
     retry_until_timeout_or_success(
         30,
         6,
@@ -236,9 +433,24 @@ def adapt_ols_config() -> tuple[str, str, str]:
         ),
     )
 
+    # Wait for the new configuration to be applied and pods to be ready
+    print("Waiting for new configuration to be applied...")
     wait_for_deployment()
 
-    # scale down the operator controller manager to avoid it interfering with the tests
+    # Update OLS configmap with additional e2e configurations
+    print("Updating OLS configmap with e2e test configurations...")
+    try:
+        update_ols_configmap()
+    except Exception as e:
+        print(f"Warning: Could not update OLS configmap: {e}")
+    
+    # Wait a bit more for configmap changes to be picked up
+    print("Waiting for configmap changes to be applied...")
+    import time
+    time.sleep(10)
+    
+    # Scale down the operator controller manager to avoid it interfering with the tests
+    print("Scaling down controller manager to prevent interference...")
     cluster_utils.run_oc(
         [
             "scale",
@@ -247,28 +459,9 @@ def adapt_ols_config() -> tuple[str, str, str]:
             "0",
         ]
     )
-    cluster_utils.run_oc(
-        [
-            "scale",
-            "deployment/lightspeed-app-server",
-            "--replicas",
-            "0",
-        ]
-    )
-
-    # Update OLS configmap with additional e2e configurations
-    try:
-        update_ols_configmap()
-    except Exception as e:
-        print(f"Warning: Could not update OLS configmap: {e}")
-    cluster_utils.run_oc(
-        [
-            "scale",
-            "deployment/lightspeed-app-server",
-            "--replicas",
-            "1",
-        ]
-    )
+    
+    # Give the operator time to gracefully shut down
+    time.sleep(5)
 
     # Ensure service accounts exist
     try:
@@ -284,8 +477,26 @@ def adapt_ols_config() -> tuple[str, str, str]:
     except Exception as e:
         print(f"Warning: Could not ensure pod-reader role/binding: {e}")
 
-    # Wait for deployment and pods
-    wait_for_deployment()
+    # Wait for deployment and pods with enhanced error handling
+    print("Waiting for deployment to be ready after all configuration changes...")
+    try:
+        wait_for_deployment()
+    except Exception as e:
+        print(f"❌ Deployment failed to become ready: {e}")
+        # Get detailed pod status for debugging
+        try:
+            pods = cluster_utils.run_oc(["get", "pods", "-o", "wide"]).stdout
+            print("Current pod status:")
+            print(pods)
+            
+            # Check for any events that might explain the pending state
+            events = cluster_utils.run_oc(["get", "events", "--sort-by=.lastTimestamp"]).stdout
+            print("Recent events (last 10):")
+            print("\n".join(events.split("\n")[-10:]))
+            
+        except Exception as debug_e:
+            print(f"Could not get debug info: {debug_e}")
+        raise
 
     # Disable collector script by default to avoid running during all tests
     pod_name = cluster_utils.get_pod_by_prefix()[0]
@@ -300,6 +511,8 @@ def adapt_ols_config() -> tuple[str, str, str]:
     # Set up route and get URL
     ols_url = setup_route()
     wait_for_ols(ols_url)
+    
+    # MCP sidecar is automatically provisioned by operator when introspectionEnabled: true
 
     print("OLS configuration and access setup completed successfully.")
     return ols_url, token, metrics_token
