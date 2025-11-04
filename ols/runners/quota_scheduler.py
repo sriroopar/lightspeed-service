@@ -14,6 +14,26 @@ from ols.utils.config import AppConfig
 logger: logging.Logger = logging.getLogger(__name__)
 
 
+RECONCILE_USER_QUOTA_LIMITS_STATEMENT = """
+    UPDATE quota_limits
+       SET available = available + (%s - quota_limit),
+           quota_limit = %s,
+           updated_at = NOW()
+     WHERE subject = 'u'
+       AND quota_limit != %s
+    RETURNING id, quota_limit, available;
+    """
+
+RECONCILE_CLUSTER_QUOTA_LIMITS_STATEMENT = """
+    UPDATE quota_limits
+       SET available = available + (%s - quota_limit),
+           quota_limit = %s,
+           updated_at = NOW()
+     WHERE subject = 'c'
+       AND quota_limit != %s
+    RETURNING id, quota_limit, available;
+    """
+
 INCREASE_QUOTA_STATEMENT = """
     UPDATE quota_limits
        SET available=available+%s, revoked_at=NOW()
@@ -59,6 +79,10 @@ def quota_scheduler(config: Optional[QuotaHandlersConfig]) -> bool:
         logger.info("Quota scheduler sync started")
         for name, limiter in config.limiters.limiters.items():
             try:
+                reconcile_quota_limits(connection, name, limiter)
+            except Exception as e:
+                logger.error("Quota reconciliation error: %s", e)
+            try:
                 quota_revocation(connection, name, limiter)
             except Exception as e:
                 logger.error("Quota revoke error: %s", e)
@@ -67,6 +91,66 @@ def quota_scheduler(config: Optional[QuotaHandlersConfig]) -> bool:
     # unreachable code
     connection.close()
     return True
+
+
+def reconcile_quota_limits(
+    connection: Any, name: str, quota_limiter: LimiterConfig
+) -> None:
+    """Reconcile quota limits when configuration changes.
+    
+    This function detects when initialQuota differs from the stored quota_limit
+    in the database and updates both quota_limit and available quota while
+    preserving consumed tokens using the formula:
+    available_new = available_old + (new_quota - old_quota_limit)
+    """
+    if quota_limiter.type is None:
+        logger.warning("Limiter type not set for '%s', skipping reconciliation", name)
+        return
+
+    if quota_limiter.initial_quota is None or quota_limiter.initial_quota <= 0:
+        logger.debug(
+            "Limiter '%s' has no or invalid initial_quota, skipping reconciliation",
+            name,
+        )
+        return
+
+    subject_id = get_subject_id(quota_limiter.type)
+    reconcile_statement = get_reconcile_statement(quota_limiter.type)
+
+    if reconcile_statement is None:
+        logger.warning(
+            "Unknown limiter type '%s' for limiter '%s', skipping reconciliation",
+            quota_limiter.type,
+            name,
+        )
+        return
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            reconcile_statement,
+            (
+                quota_limiter.initial_quota,
+                quota_limiter.initial_quota,
+                quota_limiter.initial_quota,
+            ),
+        )
+        rows = cursor.fetchall()
+        if rows:
+            for row in rows:
+                logger.info(
+                    "Reconciled quota for limiter='%s' subject='%s' type='%s': "
+                    "quota_limit=%s, available=%s",
+                    name,
+                    subject_id,
+                    quota_limiter.type,
+                    row[1],
+                    row[2],
+                )
+            logger.info(
+                "Quota reconciliation complete for '%s': updated %d record(s)",
+                name,
+                len(rows),
+            )
 
 
 def quota_revocation(connection: Any, name: str, quota_limiter: LimiterConfig) -> None:
@@ -153,6 +237,17 @@ def get_subject_id(limiter_type: str) -> str:
             return "c"
         case _:
             return "?"
+
+
+def get_reconcile_statement(limiter_type: str) -> Optional[str]:
+    """Get the appropriate reconciliation SQL statement based on limiter type."""
+    match limiter_type:
+        case constants.USER_QUOTA_LIMITER:
+            return RECONCILE_USER_QUOTA_LIMITS_STATEMENT
+        case constants.CLUSTER_QUOTA_LIMITER:
+            return RECONCILE_CLUSTER_QUOTA_LIMITS_STATEMENT
+        case _:
+            return None
 
 
 def connect(config: PostgresConfig) -> Any:
