@@ -5,10 +5,11 @@
 # Core Evaluation Configuration
 # Limits concurrent evaluations to avoid OpenAI API rate limiting.
 # Each thread issues one OLS call (which internally calls the provider LLM)
-# and one judge LLM call, so 5 threads produce at most 10 concurrent OpenAI
-# requests at any time.
+# and one judge LLM call, so 2 threads produce at most 4 concurrent OpenAI
+# requests at any time. gpt-5-mini has tighter rate limits than gpt-4.x;
+# keeping concurrency low avoids 429 errors that cause evaluation errors.
 core:
-  max_threads: 5
+  max_threads: 2
 
 # Judge LLM Configuration
 # Uses OpenAI GPT-5-mini for evaluation scoring.
@@ -16,7 +17,7 @@ core:
 llm:
   provider: "openai"
   model: "gpt-5-mini"
-  temperature: 0.0
+  temperature: 1.0
   max_tokens: 512
   timeout: 300
   num_retries: 3

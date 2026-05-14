@@ -8,13 +8,13 @@
 # Core Evaluation Configuration
 # Limits concurrent evaluations to avoid OpenAI API rate limiting.
 core:
-  max_threads: 5
+  max_threads: 2
 
 # Judge LLM — scores OLS responses against expected answers
 llm:
   provider: "openai"
   model: "gpt-5-mini"
-  temperature: 0.0
+  temperature: 1.0
   max_tokens: 5000
   timeout: 300
   num_retries: 3
