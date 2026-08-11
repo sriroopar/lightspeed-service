@@ -26,18 +26,6 @@ ClientHeaders: TypeAlias = dict[str, dict[str, str]]
 MCPServersDict: TypeAlias = dict[str, MCPServerTransport]
 
 
-_MCP_TO_NETWORK_TRANSPORT: dict[str, str] = {
-    "streamable_http": "tcp",
-    "sse": "tcp",
-    "stdio": "pipe",
-}
-
-
-def _mcp_transport_to_network(mcp_transport: str) -> str:
-    """Map MCP transport type to OTel network.transport value (OSI layer)."""
-    return _MCP_TO_NETWORK_TRANSPORT.get(mcp_transport, mcp_transport)
-
-
 def get_servers_requiring_client_headers(
     mcp_servers: MCPServers | None,
 ) -> dict[str, list[str]]:
@@ -212,17 +200,12 @@ async def gather_mcp_tools(
                     tool for tool in server_tools if tool.name in allowed_tool_names
                 ]
 
-            # Add MCP server name and transport metadata to each tool's metadata
-            server_config = mcp_servers[server_name]
-            mcp_transport = _mcp_transport_to_network(
-                server_config.get("transport", "")
-            )
+            # Add MCP server name to each tool's metadata
             for tool in server_tools:
                 _normalize_tool_schema(tool)
                 if not hasattr(tool, "metadata") or tool.metadata is None:
                     tool.metadata = {}
                 tool.metadata["mcp_server"] = server_name
-                tool.metadata["mcp_transport"] = mcp_transport
 
             all_tools.extend(server_tools)
             logger.info(

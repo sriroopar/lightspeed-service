@@ -204,7 +204,7 @@ shellcheck: ## Run shellcheck
 	shellcheck -- */*.sh
 
 tls-scan: ## Run TLS profile compliance scan against OLS endpoints
-	ARTIFACT_DIR="$(ARTIFACT_DIR)" ./scripts/tls-scan.sh
+	./scripts/tls-scan.sh
 
 konflux-requirements:	## Generate hermetic requirements.*.txt file for konflux build
 	python3 scripts/konflux_resolve.py --profile cpu

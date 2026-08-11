@@ -7,7 +7,6 @@ SCANNER_IMAGE="${SCANNER_IMAGE:-quay.io/openshift-lightspeed/ols-qe:tls-scanner}
 OLS_PID=""
 FAILURES=0
 TOTAL_CHECKS=0
-PODMAN_CONTAINER_CREATED=0
 
 log() {
     echo "[tls-scan] $*"
@@ -18,9 +17,7 @@ cleanup() {
         kill "${OLS_PID}" 2>/dev/null || true
         wait "${OLS_PID}" 2>/dev/null || true
     fi
-    if [[ "${PODMAN_CONTAINER_CREATED}" == "1" ]]; then
-        podman rm "tls-scanner-extract-$$" 2>/dev/null || true
-    fi
+    podman rm "tls-scanner-extract-$$" 2>/dev/null || true
     if [[ "${TLS_SCAN_KEEP_ARTIFACTS:-0}" != "1" ]]; then
         rm -rf "${SCAN_DIR}"
         log "Cleaned up ${SCAN_DIR}"
@@ -44,19 +41,12 @@ generate_certs() {
 }
 
 extract_scanner() {
-    if [[ -x "/usr/local/bin/tls-scanner" && -d "/opt/testssl" ]]; then
-        log "tls-scanner already installed, copying to ${SCAN_DIR}..."
-        cp /usr/local/bin/tls-scanner "${SCAN_DIR}/tls-scanner"
-        cp -r /opt/testssl "${SCAN_DIR}/testssl"
-    else
-        log "Extracting tls-scanner from ${SCANNER_IMAGE}..."
-        local container_name="tls-scanner-extract-$$"
-        PODMAN_CONTAINER_CREATED=1
-        podman create --name "${container_name}" "${SCANNER_IMAGE}" >/dev/null 2>&1
-        podman cp "${container_name}:/usr/local/bin/tls-scanner" "${SCAN_DIR}/tls-scanner"
-        podman cp "${container_name}:/opt/testssl" "${SCAN_DIR}/testssl"
-        podman rm "${container_name}" >/dev/null 2>&1
-    fi
+    log "Extracting tls-scanner from ${SCANNER_IMAGE}..."
+    local container_name="tls-scanner-extract-$$"
+    podman create --name "${container_name}" "${SCANNER_IMAGE}" >/dev/null 2>&1
+    podman cp "${container_name}:/usr/local/bin/tls-scanner" "${SCAN_DIR}/tls-scanner"
+    podman cp "${container_name}:/opt/testssl" "${SCAN_DIR}/testssl"
+    podman rm "${container_name}" >/dev/null 2>&1
     chmod +x "${SCAN_DIR}/tls-scanner"
     export PATH="${SCAN_DIR}/testssl:${PATH}"
     log "tls-scanner extracted"
@@ -181,28 +171,6 @@ report_results() {
     log "All TLS scans passed"
 }
 
-export_artifacts() {
-    if [[ -z "${ARTIFACT_DIR:-}" ]]; then
-        return
-    fi
-    local dest="${ARTIFACT_DIR}/tls-scan"
-    mkdir -p "${dest}"
-    shopt -s nullglob
-    local artifacts=(
-        "${SCAN_DIR}"/*.json
-        "${SCAN_DIR}"/*-junit.xml
-        "${SCAN_DIR}"/pqc-check.log
-        "${SCAN_DIR}"/*-scan.log
-    )
-    shopt -u nullglob
-    if ((${#artifacts[@]} == 0)); then
-        log "No TLS scan artifacts found in ${SCAN_DIR}"
-        return 0
-    fi
-    cp -v -- "${artifacts[@]}" "${dest}/" || return 1
-    log "Artifacts exported to ${dest}"
-}
-
 generate_certs
 extract_scanner
 
@@ -230,5 +198,4 @@ for profile in IntermediateType ModernType; do
     stop_ols
 done
 
-export_artifacts
 report_results

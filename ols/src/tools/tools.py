@@ -14,7 +14,6 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools.structured import StructuredTool
 
 from ols import config
-from ols.app.metrics.metrics import gen_ai_execute_tool_duration_seconds
 from ols.app.models.models import StreamChunkType
 from ols.src.tools.approval import (
     get_approval_decision,
@@ -531,29 +530,19 @@ async def _execute_single_tool_call_stream(
     """
     tool_id, tool_args, tool = tool_call
     tool_name = getattr(tool, "name", "unknown")
-    metadata = getattr(tool, "metadata", None) or {}
-    mcp_server = metadata.get("mcp_server", "")
-
-    span_attrs: dict[str, str] = {
-        "gen_ai.operation.name": "execute_tool",
-        "gen_ai.tool.name": tool_name,
-        "gen_ai.tool.call.id": tool_id,
-        "gen_ai.tool.type": "function",
-    }
-    if mcp_server:
-        span_attrs["mcp.method.name"] = "tools/call"
-        mcp_transport = metadata.get("mcp_transport", "")
-        if mcp_transport:
-            span_attrs["network.transport"] = mcp_transport
-        session_id = metadata.get("mcp_session_id", "")
-        if session_id:
-            span_attrs["mcp.session.id"] = session_id
-        protocol_version = metadata.get("mcp_protocol_version", "")
-        if protocol_version:
-            span_attrs["mcp.protocol.version"] = protocol_version
+    mcp_server = (getattr(tool, "metadata", None) or {}).get("mcp_server", "")
 
     tool_span = (
-        audit_ctx.span(f"execute_tool {tool_name}", **span_attrs, mcp_server=mcp_server)
+        audit_ctx.span(
+            f"execute_tool {tool_name}",
+            **{
+                "gen_ai.operation.name": "execute_tool",
+                "gen_ai.tool.name": tool_name,
+                "gen_ai.tool.call.id": tool_id,
+                "gen_ai.tool.type": "function",
+            },
+            mcp_server=mcp_server,
+        )
         if audit_ctx
         else nullcontext()
     )
@@ -586,18 +575,13 @@ async def _execute_single_tool_call_stream(
                 offload_manager=offload_manager,
             )
         )
-        elapsed = time.monotonic() - t0
-        duration_ms = int(elapsed * 1000)
-        gen_ai_execute_tool_duration_seconds.labels(
-            gen_ai_tool_name=tool_name,
-        ).observe(elapsed)
+        duration_ms = int((time.monotonic() - t0) * 1000)
 
         if audit_ctx:
             audit_ctx.logger.tool_result(
                 output_length=len(tool_output),
                 success=status == "success",
                 duration_ms=duration_ms,
-                output_content=tool_output if audit_ctx.capture_content else None,
             )
 
         yield _tool_result_event(
