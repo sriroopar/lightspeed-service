@@ -2,16 +2,8 @@
 set -eou pipefail
 
 # Input env variables:
-# - [PROVIDERNAME]_PROVIDER_KEY_PATH - path to a file containing the credentials
-#   to be used with the llm provider. For Bedrock providers this is a
-#   discriminator string ("iam" or "iam_role") instead of a file path;
-#   see ensure_bedrock_iam_secret() in ols_installer.py.
+# - [PROVIDERNAME]_PROVIDER_KEY_PATH - path to a file containing the credentials to be used with the llm provider
 # - OLS_IMAGE - pullspec for the ols image to deploy on the cluster
-# - BEDROCK_AWS_ACCESS_KEY_ID        - (Bedrock IAM) AWS access key ID
-# - BEDROCK_AWS_SECRET_ACCESS_KEY    - (Bedrock IAM) AWS secret access key
-# - BEDROCK_ROLE_AWS_ACCESS_KEY_ID   - (Bedrock IAM role) AWS access key ID
-# - BEDROCK_ROLE_AWS_SECRET_ACCESS_KEY - (Bedrock IAM role) AWS secret access key
-# - BEDROCK_ROLE_ARN                 - (Bedrock IAM role) AWS role ARN
 
 
 # Script flow:
@@ -55,7 +47,7 @@ function run_suites() {
   run_suite "openai_mcp" "mcp" "openai" "$OPENAI_PROVIDER_KEY_PATH" "gpt-5.4-mini" "$OLS_IMAGE" "mcp"
   (( rc = rc || $? ))
 
-  run_suite "google_vertex" "not azure_entra_id and not certificates and not (tool_calling and not smoketest) and not byok1 and not byok2 and not quota_limits and not data_export" "google_vertex" "$VERTEX_PROVIDER_KEY_PATH" "gemini-3.1-flash-lite" "$OLS_IMAGE" "default"
+  run_suite "google_vertex" "not azure_entra_id and not certificates and not (tool_calling and not smoketest) and not byok1 and not byok2 and not quota_limits and not data_export" "google_vertex" "$VERTEX_PROVIDER_KEY_PATH" "gemini-2.5-flash-lite" "$OLS_IMAGE" "default"
   (( rc = rc || $? ))
 
   run_suite "google_vertex_anthropic" "not azure_entra_id and not certificates and not (tool_calling and not smoketest) and not byok1 and not byok2 and not quota_limits and not data_export" "google_vertex_anthropic" "$VERTEX_PROVIDER_KEY_PATH" "claude-sonnet-4-6" "$OLS_IMAGE" "default"
@@ -72,30 +64,13 @@ function run_suites() {
   run_suite "rhelai_vllm" "smoketest" "rhelai_vllm" "$OPENAI_PROVIDER_KEY_PATH" "gpt-4.1-mini" "$OLS_IMAGE" "default"
   (( rc = rc || $? ))
 
-  # Bedrock suites — PROVIDER_KEY_PATH carries a discriminator ("iam" or
-  # "iam_role") instead of a credential file path; see
-  # ensure_bedrock_iam_secret() in ols_installer.py.
-  run_suite "bedrock_anthropic" "not azure_entra_id and not certificates and not (tool_calling and not smoketest and not rag) and not byok1 and not byok2 and not quota_limits and not data_export" "bedrock_anthropic" "iam" "anthropic.claude-sonnet-4-6" "$OLS_IMAGE" "default"
-  (( rc = rc || $? ))
-
-  run_suite "bedrock_deepseek" "not azure_entra_id and not certificates and not (tool_calling and not smoketest and not rag) and not byok1 and not byok2 and not quota_limits and not data_export" "bedrock_deepseek" "iam" "deepseek.v3.2" "$OLS_IMAGE" "default"
-  (( rc = rc || $? ))
-
-  run_suite "bedrock_anthropic_iam_role" "smoketest" "bedrock_anthropic" "iam_role" "anthropic.claude-sonnet-4-6" "$OLS_IMAGE" "default"
-  (( rc = rc || $? ))
-
-  run_suite "bedrock_deepseek_iam_role" "smoketest" "bedrock_deepseek" "iam_role" "deepseek.v3.2" "$OLS_IMAGE" "default"
-  (( rc = rc || $? ))
-
   # TODO: Reduce execution time. Sequential execution will take more time. Parallel execution will have cluster claim issue.
   # Run tool calling - Enable tool_calling
-  run_suite "bedrock_deepseek_tool_calling" "tool_calling" "bedrock_deepseek" "iam" "deepseek.v3.2" "$OLS_IMAGE" "tool_calling"
-  (( rc = rc || $? ))
   run_suite "azure_openai_tool_calling" "tool_calling" "azure_openai" "$AZUREOPENAI_PROVIDER_KEY_PATH" "gpt-4.1-mini" "$OLS_IMAGE" "tool_calling"
   (( rc = rc || $? ))
   run_suite "openai_tool_calling" "tool_calling" "openai" "$OPENAI_PROVIDER_KEY_PATH" "gpt-5.4-mini" "$OLS_IMAGE" "tool_calling"
   (( rc = rc || $? ))
-  # run_suite "google_vertex_tool_calling" "tool_calling" "google_vertex" "$VERTEX_PROVIDER_KEY_PATH" "gemini-3.1-flash-lite" "$OLS_IMAGE" "tool_calling"
+  # run_suite "google_vertex_tool_calling" "tool_calling" "google_vertex" "$VERTEX_PROVIDER_KEY_PATH" "gemini-2.5-flash-lite" "$OLS_IMAGE" "tool_calling"
   # (( rc = rc || $? ))
   run_suite "google_vertex_anthropic_tool_calling" "tool_calling" "google_vertex_anthropic" "$VERTEX_PROVIDER_KEY_PATH" "claude-sonnet-4-6" "$OLS_IMAGE" "tool_calling"
   (( rc = rc || $? ))

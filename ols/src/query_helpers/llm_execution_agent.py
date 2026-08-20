@@ -18,7 +18,6 @@ from opentelemetry.trace import SpanKind
 
 from ols import constants
 from ols.app.metrics import TokenMetricUpdater
-from ols.app.metrics.metrics import gen_ai_client_operation_duration_seconds
 from ols.app.metrics.token_counter import GenericTokenCounter
 from ols.app.models.config import ModelConfig
 from ols.app.models.models import RagChunk, StreamChunkType, StreamedChunk
@@ -460,20 +459,12 @@ class LLMExecutionAgent:
                 time.monotonic() - llm_start_time,
             )
             raise
-        else:
-            logger.debug(
-                "LLM invocation completed: provider=%s, model=%s, elapsed=%.2fs",
-                self.provider,
-                self.model,
-                time.monotonic() - llm_start_time,
-            )
-        finally:
-            elapsed = time.monotonic() - llm_start_time
-            gen_ai_client_operation_duration_seconds.labels(
-                gen_ai_request_model=self.model,
-                gen_ai_provider_name=self.provider_type,
-                gen_ai_operation_name="chat",
-            ).observe(elapsed)
+        logger.debug(
+            "LLM invocation completed: provider=%s, model=%s, elapsed=%.2fs",
+            self.provider,
+            self.model,
+            time.monotonic() - llm_start_time,
+        )
 
     def _resolve_tool_call_definitions(
         self,
