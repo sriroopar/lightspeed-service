@@ -475,7 +475,7 @@ def wait_for_running_pod(
         "Waiting for containers in the server pod to become ready",
     )
     if not r:
-        raise Exception("Timed out waiting for containers to become ready")
+        raise RuntimeError("Timed out waiting for containers to become ready")
 
     if not wait_http_ready:
         return
